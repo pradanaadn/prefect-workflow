@@ -1,0 +1,91 @@
+version: "3.8"
+
+services:
+  # Prefect PostgreSQL Database
+  prefect-db:
+    image: postgres:17
+    container_name: prefect-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: prefect
+      POSTGRES_PASSWORD: prefect-password
+      POSTGRES_DB: prefect
+    volumes:
+      - prefect-db-data:/var/lib/postgresql/data
+    networks:
+      - prefect-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prefect"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Prefect 3 Server
+  prefect-server:
+    image: prefecthq/prefect:3-latest
+    container_name: prefect-server
+    restart: unless-stopped
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://prefect:prefect-password@prefect-db:5432/prefect
+      PREFECT_UI_URL: http://localhost:4200
+      PREFECT_API_URL: http://localhost:4200/api
+      # Prefect 3 specific settings
+      PREFECT_SERVER_ALLOW_EPHEMERAL_MODE: "false"
+    ports:
+      - "4200:4200"
+    depends_on:
+      prefect-db:
+        condition: service_healthy
+    networks:
+      - prefect-network
+    volumes:
+      - prefect-data:/root/.prefect
+
+  # Prefect 3 Worker (using process work pool)
+  prefect-worker:
+    image: prefecthq/prefect:3-latest
+    container_name: prefect-worker
+    restart: unless-stopped
+    command: prefect worker start --pool default-pool
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+    depends_on:
+      - prefect-server
+    networks:
+      - prefect-network
+    volumes:
+      - prefect-worker-data:/root/.prefect
+      - /var/run/docker.sock:/var/run/docker.sock # Optional: for Docker-based deployments
+
+  # Optional: Prefect CLI container for management tasks
+  prefect-cli:
+    image: prefecthq/prefect:3-latest
+    container_name: prefect-cli
+    restart: "no"
+    entrypoint: ["tail", "-f", "/dev/null"]
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+    depends_on:
+      - prefect-server
+    networks:
+      - prefect-network
+    volumes:
+      - prefect-flows:/flows
+    profiles:
+      - management # Only start when using 'docker-compose --profile management up'
+
+volumes:
+  prefect-db-data:
+    driver: local
+  prefect-data:
+    driver: local
+  prefect-worker-data:
+    driver: local
+  prefect-flows:
+    driver: local
+
+networks:
+  prefect-network:
+    driver: bridge
